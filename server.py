@@ -14,11 +14,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse
 from pydantic import BaseModel
 from pathlib import Path
+
 import torchvision
 from torchvision import transforms as T
 from torchvision.transforms.functional import InterpolationMode
 
-# basic config
+# ---------------------------------------------------------------------
+# Basic config
+# ---------------------------------------------------------------------
 torch.set_num_threads(1)
 _INFER_LOCK = threading.Lock()
 
@@ -28,17 +31,22 @@ MAX_POINTS  = int(os.getenv("MAX_POINTS", "240"))
 
 FRESHNESS_NAMES = ["Fresh", "Spoiled"]
 
-# preprocessing
+# Preprocessing (matches your notebook)
 IMG_TX = T.Compose([
     T.Resize((224, 224), interpolation=InterpolationMode.BICUBIC),
     T.ToTensor()
 ])
 
+# ---------------------------------------------------------------------
 # FastAPI
+# ---------------------------------------------------------------------
 app = FastAPI(title="Fruit Freshness & Gas Detector")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"]
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 LAST = {"vision": None, "vision_updated": None, "gas": None, "gas_updated": None}
@@ -46,7 +54,9 @@ HISTORY = deque(maxlen=MAX_POINTS)
 EXPO_TOKENS = set()
 LAST_DECISION = None
 
-# Expo tokens
+# ---------------------------------------------------------------------
+# Expo tokens persistence
+# ---------------------------------------------------------------------
 TOKENS_FILE = Path(__file__).parent / "expo_tokens.json"
 
 def _load_tokens():
@@ -62,10 +72,11 @@ def _save_tokens():
     except Exception:
         pass
 
-
 _load_tokens()
 
-#notifications
+# ---------------------------------------------------------------------
+# Expo push notifications
+# ---------------------------------------------------------------------
 def send_expo_push(title: str, body: str, data: dict | None = None):
     if not EXPO_TOKENS:
         return {"ok": False, "detail": "no tokens"}
@@ -83,11 +94,12 @@ def send_expo_push(title: str, body: str, data: dict | None = None):
         return {"ok": r.ok, "status": r.status_code, "resp": r.text[:200]}
     except Exception as e:
         return {"ok": False, "detail": str(e)}
-# notifier hook when decision changes
+
 def maybe_notify_on_spoilage():
+    """Notify once when decision flips to SPOILED."""
     global LAST_DECISION
     try:
-        s = _summarize(LAST)  # you already have _summarize
+        s = _summarize(LAST)
         decision = s.get("decision")
         if decision and decision != LAST_DECISION:
             if decision == "SPOILED":
@@ -102,7 +114,9 @@ def maybe_notify_on_spoilage():
     except Exception:
         pass
 
-# registeration
+# ---------------------------------------------------------------------
+# Expo register / unregister
+# ---------------------------------------------------------------------
 class ExpoToken(BaseModel):
     token: str
 
@@ -120,32 +134,35 @@ def unregister_expo(t: ExpoToken):
     _save_tokens()
     return {"ok": True, "count": len(EXPO_TOKENS)}
 
-# model
+# ---------------------------------------------------------------------
+# Model
+# ---------------------------------------------------------------------
 class Model(nn.Module):
     def __init__(self):
         super().__init__()
         self.alpha = 0.7
-        
         try:
             self.base = torchvision.models.resnet18(weights=None)
         except TypeError:
             self.base = torchvision.models.resnet18(pretrained=False)
+
         for m in self.base.modules():
             if hasattr(m, "inplace"):
                 m.inplace = False
         for p in list(self.base.parameters())[:-15]:
             p.requires_grad = False
+
         self.base.fc = nn.Sequential()
 
         self.block1 = nn.Sequential(
             nn.Linear(512, 256), nn.ReLU(), nn.Dropout(0.2),
             nn.Linear(256, 128),
         )
-        self.block2 = nn.Sequential(
+        self.block2 = nn.Sequential(  # fruit head (unused here)
             nn.Linear(128, 128), nn.ReLU(), nn.Dropout(0.1),
             nn.Linear(128, 9)
         )
-        self.block3 = nn.Sequential(
+        self.block3 = nn.Sequential(  # freshness head
             nn.Linear(128, 32), nn.ReLU(), nn.Dropout(0.1),
             nn.Linear(32, 2)
         )
@@ -160,12 +177,13 @@ class Model(nn.Module):
 _model = None
 
 def load_model():
+    """Load TorchScript, then full module, then state_dict."""
     global _model
     print("[model] MODEL_PATH:", MODEL_PATH, "exists:", os.path.exists(MODEL_PATH))
     if _model is not None:
         return _model
 
-    # TorchScript
+    # 1) TorchScript
     try:
         m = torch.jit.load(MODEL_PATH, map_location=DEVICE)
         m.eval().to(DEVICE)
@@ -174,7 +192,7 @@ def load_model():
     except Exception:
         pass
 
-    # full module or state_dict
+    # 2) Full Module or 3) state_dict
     obj = torch.load(MODEL_PATH, map_location=DEVICE)
     if isinstance(obj, nn.Module):
         _model = obj.eval().to(DEVICE)
@@ -191,7 +209,6 @@ def load_model():
 def predict_pil(pil: Image.Image):
     model = load_model()
     x = IMG_TX(pil).unsqueeze(0).to(DEVICE)
-
     with _INFER_LOCK, torch.inference_mode():
         out = model(x)
         if isinstance(out, (tuple, list)) and len(out) >= 2:
@@ -206,7 +223,9 @@ def predict_pil(pil: Image.Image):
     raw = {FRESHNESS_NAMES[i]: float(p) for i, p in enumerate(probs_t)}
     return {"label": label, "confidence": round(conf, 1), "raw": {"probs": raw}}
 
-# Vision
+# ---------------------------------------------------------------------
+# Vision endpoint
+# ---------------------------------------------------------------------
 @app.post("/predict")
 async def predict(image: UploadFile = File(...)):
     try:
@@ -221,11 +240,12 @@ async def predict(image: UploadFile = File(...)):
         LAST["vision_updated"] = datetime.utcnow().isoformat()
         maybe_notify_on_spoilage()
         return JSONResponse(out)
-    
     except Exception as e:
         return JSONResponse({"error": "inference_failed", "detail": str(e)}, status_code=500)
 
-# Gas 
+# ---------------------------------------------------------------------
+# Gas endpoints
+# ---------------------------------------------------------------------
 class GasReading(BaseModel):
     vrl: Optional[float] = None
     adc: Optional[int]   = None
@@ -276,17 +296,16 @@ def gas(g: GasReading):
     LAST["gas_updated"] = datetime.utcnow().isoformat()
     maybe_notify_on_spoilage()
 
-    # Compute combined decision (vision + gas thresholds)
+    # compute combined decision
     summary = _summarize(LAST)
     decision = summary["decision"]
-    
-    # Save in history (ppm + decision)
+
+    # save to history
     HISTORY.append({
         "time": datetime.utcnow().isoformat(),
         "ppm": data["ppm"],
         "decision": decision
     })
-    
     return {"ok": True, "data": data, "decision": decision}
 
 @app.get("/history")
@@ -306,7 +325,7 @@ def export_csv():
             ppm.get("nh3"),
             ppm.get("benzene"),
             ppm.get("alcohol"),
-            r.get("decision") 
+            r.get("decision")
         ])
     return HTMLResponse(
         content=buf.getvalue(),
@@ -314,14 +333,15 @@ def export_csv():
         headers={"Content-Disposition": 'attachment; filename="gas_history.csv"'}
     )
 
-# Summary / Health 
+# ---------------------------------------------------------------------
+# Summary / Health
+# ---------------------------------------------------------------------
 def _summarize(last: dict) -> dict:
     """
-    Combine the latest vision prediction and gas ppm into a single, simple decision.
-    - Vision only votes 'rotten' if label says spoiled/rotten AND confidence >= VISION_MIN_CONF.
+    Combine the latest vision prediction and gas ppm into one decision.
+    - Vision votes 'rotten' only if label says spoiled/rotten AND confidence >= VISION_MIN_CONF.
     - Any high gas flag can mark the sample as spoiled.
     """
-    # thresholds
     VISION_MIN_CONF = float(os.getenv("VISION_MIN_CONF", "60"))
     CO2_HI  = float(os.getenv("CO2_HI",  "2000"))
     NH3_HI  = float(os.getenv("NH3_HI",  "15"))
@@ -336,12 +356,10 @@ def _summarize(last: dict) -> dict:
     benz  = gas.get("benzene")
     alco  = gas.get("alcohol")
 
-    # gas flags
     co2_hi = (co2 is not None)  and (co2  >= CO2_HI)
     nh3_hi = (nh3 is not None)  and (nh3  >= NH3_HI)
     voc_hi = ((benz or 0) >= BENZ_HI) or ((alco or 0) >= ALC_HI)
 
-    # vision vote (label + confidence)
     label = str(pred.get("label") or "")
     conf  = float(pred.get("confidence") or 0.0)
     looks_rotten = ("spoiled" in label.lower() or "rotten" in label.lower()) and (conf >= VISION_MIN_CONF)
@@ -362,7 +380,6 @@ def _summarize(last: dict) -> dict:
         }
     }
 
-
 @app.get("/summary")
 def summary():
     return _summarize(LAST)
@@ -370,19 +387,25 @@ def summary():
 @app.get("/healthz")
 def healthz():
     return {"ok": True, "time": datetime.utcnow().isoformat()}
- @app.get("/debug-model")
+
+# ---------------------------------------------------------------------
+# Debug model endpoint  (make sure decorator is at column 0)
+# ---------------------------------------------------------------------
+@app.get("/debug-model")
 def debug_model():
     try:
         m = load_model()
-        d = torch.randn(1,3,224,224).to(DEVICE)
+        d = torch.randn(1, 3, 224, 224).to(DEVICE)
         with torch.inference_mode():
             out = m(d)
         shape = out[1].shape if isinstance(out, (tuple, list)) else out.shape
         return {"ok": True, "type": str(type(m)), "out": str(shape), "device": str(DEVICE)}
     except Exception as e:
         return {"ok": False, "error": str(e)}
-   
-# UI
+
+# ---------------------------------------------------------------------
+# Minimal UI (welcome + /home)
+# ---------------------------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
 def welcome():
     return """
@@ -451,7 +474,6 @@ def welcome():
 </html>
 """
 
-
 @app.get("/home", response_class=HTMLResponse)
 def home():
     return """
@@ -496,7 +518,6 @@ def home():
   }
   button:hover{ background:var(--green-dark) }
   button:active{ transform:translateY(1px) }
-  button.secondary{ background:#e7fff1; color:#0b3d2e; border:1px solid #b9f3d2; box-shadow:none; }
   button.gray{ background:#f3f4f6; color:#111827; border:1px solid #e5e7eb; box-shadow:none; }
   input[type=file], input[type=number], select, input[type=time]{
     padding:10px 12px; border:1px solid #d1d5db; border-radius:10px; background:#fff; font-weight:600;
@@ -534,17 +555,15 @@ def home():
   <div class="card">
     <h2>1) Upload or Capture Fruit Image <span id="visionStatus" class="pill">idle</span></h2>
 
-    <!-- Upload + Predict -->
     <div class="row">
       <input id="file" type="file" accept="image/*" />
       <button type="button" onclick="predictFile()">🔮 Predict</button>
-      <button type="button" class="secondary" onclick="startCam()">📷 Use Webcam</button>
+      <button type="button" class="gray" onclick="startCam()">📷 Use Webcam</button>
       <button type="button" class="gray" onclick="snap()">📸 Snapshot (Predict Now)</button>
       <button type="button" class="gray" onclick="stopCam()">⏹ Stop Camera</button>
       <button type="button" class="gray" onclick="clearVision()">🧹 Clear Image</button>
     </div>
 
-    <!-- NEW: Camera chooser / front-back flip / auto daily -->
     <div class="row">
       <select id="camSelect" title="Select camera"></select>
       <button type="button" class="gray" onclick="flipCam()">🔄 Flip (front/back)</button>
@@ -606,7 +625,6 @@ const el = {
   camSelect:$('camSelect'), autoDaily:$('autoDaily'), autoTime:$('autoTime'), autoInfo:$('autoInfo')
 };
 
-/* ====== helpers ====== */
 function clearVision(){
   el.preview.src=''; el.preview.style.display='none';
   el.video.style.display='none'; el.canvas.style.display='none';
@@ -622,7 +640,6 @@ function updateVision(j){
   el.visionTop.textContent = lbl.toUpperCase();
 }
 
-/* ====== upload predict ====== */
 async function predictFile(){
   const f = el.file.files[0];
   if(!f){ alert("Choose an image"); return; }
@@ -638,9 +655,8 @@ async function predictFile(){
   } finally { setStatus('vision', 'idle'); }
 }
 
-/* ====== webcam (multi-camera + flip) ====== */
 let stream = null;
-let currentFacing = 'environment'; // 'user' | 'environment'
+let currentFacing = 'environment';
 let currentDeviceId = null;
 
 function isSecure() {
@@ -651,28 +667,18 @@ async function listCams(){
   try { 
     await navigator.mediaDevices.getUserMedia({video:true, audio:false}); 
   } catch(_){}
-
   const devices = await navigator.mediaDevices.enumerateDevices();
   const cams = devices.filter(d => d.kind === 'videoinput');
-  
   const camSel = document.getElementById('camSelect');
-  if (!camSel) return;  // guard in case element missing
-
-  // dropdown
-  camSel.innerHTML = cams.map((c,i)=>
-    `<option value="${c.deviceId}">${c.label || ('Camera '+(i+1))}</option>`
-  ).join('');
-
-  // Attach change listener once
+  if (!camSel) return;
+  camSel.innerHTML = cams.map((c,i)=>`<option value="${c.deviceId}">${c.label || ('Camera '+(i+1))}</option>`).join('');
   if (!camSel.dataset.bound) {
     camSel.addEventListener('change', async (e)=>{
       currentDeviceId = e.target.value || null;
       await startCam(currentDeviceId);
     });
-    camSel.dataset.bound = "1"; // mark so we don’t double bind
+    camSel.dataset.bound = "1";
   }
-
-  // Pick preferred camera
   if (cams.length && !currentDeviceId) {
     const back = cams.find(c => /back|rear|environment|wide/i.test(c.label));
     currentDeviceId = (back || cams[0]).deviceId;
@@ -699,15 +705,11 @@ async function startCam(deviceId){
   };
 
   let constraintsList = [];
-
   if (deviceId) {
     constraintsList.push({ video: { deviceId: { exact: deviceId } }, audio: false });
   } else {
-    // 1) strict back camera
-    constraintsList.push({ video: { facingMode: { exact: 'environment' } , width:{ideal:1280}, height:{ideal:720}}, audio: false });
-    // 2) ideal back (fallback)
-    constraintsList.push({ video: { facingMode: { ideal: 'environment' } , width:{ideal:1280}, height:{ideal:720}}, audio: false });
-    // 3) whatever default
+    constraintsList.push({ video: { facingMode: { exact: 'environment' }, width:{ideal:1280}, height:{ideal:720}}, audio: false });
+    constraintsList.push({ video: { facingMode: { ideal: 'environment' }, width:{ideal:1280}, height:{ideal:720}}, audio: false });
     constraintsList.push({ video: true, audio: false });
   }
 
@@ -722,7 +724,6 @@ async function startCam(deviceId){
   vid.srcObject = stream;
   vid.style.display='block';
 
-  // Wait for dimensions, then size canvas correctly
   await vid.play().catch(()=>{});
   if (vid.readyState >= 2) {
     sizeCanvasToVideo();
@@ -730,22 +731,17 @@ async function startCam(deviceId){
     vid.onloadedmetadata = () => sizeCanvasToVideo();
   }
 
-  // Track selected device
   const track = stream.getVideoTracks()[0];
   const settings = track.getSettings?.() || {};
   currentDeviceId = settings.deviceId || deviceId || currentDeviceId;
 
   await listCams();
   if (currentDeviceId) document.getElementById('camSelect').value = currentDeviceId;
-
-  // keep your auto-daily scheduler alive if you had one
-  if (typeof initAutoDaily === 'function') initAutoDaily();
 }
 
 function sizeCanvasToVideo(){
   const vid = document.getElementById('video');
   const cvs = document.getElementById('canvas');
-  // Use actual stream size to avoid black snaps
   const w = vid.videoWidth || 320;
   const h = vid.videoHeight || 240;
   cvs.width = w;
@@ -758,12 +754,10 @@ document.getElementById('camSelect').addEventListener('change', async (e)=>{
 });
 
 async function flipCam(){
-  // toggle desired facing and try strict facingMode first
   currentFacing = (currentFacing === 'environment') ? 'user' : 'environment';
   try {
-    await startCam(null); // will attempt facingMode path
+    await startCam(null);
   } catch {
-    // fallback: cycle to another device in the list
     const sel = document.getElementById('camSelect');
     const opts = Array.from(sel.options);
     if(opts.length > 1){
@@ -774,14 +768,12 @@ async function flipCam(){
   }
 }
 
-// Snapshot -> predict
 async function snap(){
   if(!stream){ alert('Start the webcam first'); return; }
   const vid = document.getElementById('video');
   const cvs = document.getElementById('canvas');
   const ctx = cvs.getContext('2d');
 
-  // Ensure canvas matches live stream size
   if (cvs.width !== vid.videoWidth || cvs.height !== vid.videoHeight) {
     sizeCanvasToVideo();
   }
@@ -794,72 +786,14 @@ async function snap(){
       const r = await fetch('/predict', {method:'POST', body:fd});
       const j = await r.json();
       if(!r.ok || j.error){ alert('Predict failed: '+(j.error||r.statusText)); return; }
-      if (typeof updateVision === 'function') updateVision(j);
-      if (typeof refresh === 'function') await refresh();
-      if (typeof rememberAutoRun === 'function') rememberAutoRun();
+      updateVision(j);
+      await refresh();
     } finally {
       document.getElementById('visionStatus').textContent='idle';
     }
   }, 'image/jpeg', 0.92);
 }
 
-/* ====== Auto daily prediction (client-side) ====== */
-// settings persistence
-const LS_KEY_ON   = 'autoDaily_on';
-const LS_KEY_TIME = 'autoDaily_time';
-const LS_KEY_LAST = 'autoDaily_last';
-
-function loadAutoSettings(){
-  el.autoDaily.checked = localStorage.getItem(LS_KEY_ON) === '1';
-  const t = localStorage.getItem(LS_KEY_TIME) || '09:00';
-  el.autoTime.value = t;
-  paintAutoInfo();
-}
-function saveAutoSettings(){
-  localStorage.setItem(LS_KEY_ON, el.autoDaily.checked ? '1' : '0');
-  localStorage.setItem(LS_KEY_TIME, el.autoTime.value || '09:00');
-  paintAutoInfo();
-}
-function toggleAutoDaily(){ saveAutoSettings(); initAutoDaily(); }
-
-function paintAutoInfo(){
-  const last = localStorage.getItem(LS_KEY_LAST);
-  const t = el.autoTime.value || '09:00';
-  el.autoInfo.textContent = el.autoDaily.checked
-    ? `Scheduled daily at ${t}${last?` • last run: ${new Date(last).toLocaleString()}`:''}`
-    : `Auto daily is off`;
-}
-function rememberAutoRun(){
-  localStorage.setItem(LS_KEY_LAST, new Date().toISOString());
-  paintAutoInfo();
-}
-
-let autoTimer = null;
-
-function initAutoDaily(){
-  if(autoTimer){ clearInterval(autoTimer); autoTimer = null; }
-  if(!el.autoDaily.checked) return;
-  // check every 30s whether it's time and camera is active
-  autoTimer = setInterval(()=>{
-    if(!stream) return; // only run when webcam is active
-    const target = (el.autoTime.value || '09:00').split(':');
-    const hh = parseInt(target[0]||'9',10), mm = parseInt(target[1]||'0',10);
-    const now = new Date();
-    const lastISO = localStorage.getItem(LS_KEY_LAST);
-    const last = lastISO ? new Date(lastISO) : null;
-
-    // compute today's scheduled time
-    const sched = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hh, mm, 0, 0);
-
-    // If it's after scheduled time and we haven't run today, run once
-    const notRunToday = !last || last.toDateString() !== now.toDateString();
-    if(now >= sched && notRunToday){
-      snap(); // will mark last-run after success
-    }
-  }, 30000);
-}
-
-/* ====== GAS ====== */
 async function sendGas(){
   const body = { adc:parseInt(el.adc.value||'0'), vref:parseFloat(el.vref.value||'3.3'),
                  rl:parseInt(el.rl.value||'10000'), r0:parseInt(el.r0.value||'10000'),
@@ -874,7 +808,6 @@ async function sendGas(){
 function resetGas(){ el.adc.value="1800"; el.vref.value="3.3"; el.rl.value="10000"; el.r0.value="10000"; }
 function preset(t){ if(t==='fresh'){ el.adc.value="700"; el.r0.value="12000"; } else { el.adc.value="2500"; el.r0.value="8000"; } }
 
-/* ====== Summary / Polling ====== */
 async function refresh(){
   const r = await fetch('/summary',{cache:'no-store'}); const s = await r.json();
   if(s.vision && s.vision.label){ updateVision(s.vision); }
@@ -891,7 +824,6 @@ async function refresh(){
 const badge = (t,c)=>'<span class="pill '+c+'">'+t+'</span>';
 refresh(); setInterval(refresh, 2000);
 
-/* ====== Chart ====== */
 let gasChart=null;
 function buildGradient(ctx, color){
   const g=ctx.createLinearGradient(0,0,0,ctx.canvas.height);
@@ -922,10 +854,56 @@ async function loadChart(forceFetch=false){
 }
 loadChart(true); setInterval(()=>loadChart(true), 10000);
 
-/* ====== boot ====== */
 loadAutoSettings();
 if(navigator.mediaDevices?.getUserMedia){
   listCams().catch(()=>{ /* ignore */ });
+}
+
+const LS_KEY_ON   = 'autoDaily_on';
+const LS_KEY_TIME = 'autoDaily_time';
+const LS_KEY_LAST = 'autoDaily_last';
+
+function loadAutoSettings(){
+  el.autoDaily.checked = localStorage.getItem(LS_KEY_ON) === '1';
+  const t = localStorage.getItem(LS_KEY_TIME) || '09:00';
+  el.autoTime.value = t;
+  paintAutoInfo();
+}
+function saveAutoSettings(){
+  localStorage.setItem(LS_KEY_ON, el.autoDaily.checked ? '1' : '0');
+  localStorage.setItem(LS_KEY_TIME, el.autoTime.value || '09:00');
+  paintAutoInfo();
+}
+function toggleAutoDaily(){ saveAutoSettings(); initAutoDaily(); }
+function paintAutoInfo(){
+  const last = localStorage.getItem(LS_KEY_LAST);
+  const t = el.autoTime.value || '09:00';
+  el.autoInfo.textContent = el.autoDaily.checked
+    ? `Scheduled daily at ${t}${last?` • last run: ${new Date(last).toLocaleString()}`:''}`
+    : `Auto daily is off`;
+}
+function rememberAutoRun(){
+  localStorage.setItem(LS_KEY_LAST, new Date().toISOString());
+  paintAutoInfo();
+}
+let autoTimer = null;
+function initAutoDaily(){
+  if(autoTimer){ clearInterval(autoTimer); autoTimer = null; }
+  if(!el.autoDaily.checked) return;
+  autoTimer = setInterval(()=>{
+    if(!stream) return;
+    const target = (el.autoTime.value || '09:00').split(':');
+    const hh = parseInt(target[0]||'9',10), mm = parseInt(target[1]||'0',10);
+    const now = new Date();
+    const lastISO = localStorage.getItem(LS_KEY_LAST);
+    const last = lastISO ? new Date(lastISO) : null;
+    const sched = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hh, mm, 0, 0);
+    const notRunToday = !last || last.toDateString() !== now.toDateString();
+    if(now >= sched && notRunToday){
+      snap();
+      rememberAutoRun();
+    }
+  }, 30000);
 }
 </script>
 </body>
