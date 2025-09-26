@@ -160,6 +160,7 @@ _model = None
 
 def load_model():
     global _model
+    print("[model] MODEL_PATH:", MODEL_PATH, "exists:", os.path.exists(MODEL_PATH))
     if _model is not None:
         return _model
 
@@ -320,11 +321,11 @@ def _summarize(last: dict) -> dict:
     - Any high gas flag can mark the sample as spoiled.
     """
     # thresholds
-    VISION_MIN_CONF = 60.0   # %
-    CO2_HI  = 2000.0         # ppm
-    NH3_HI  = 15.0           # ppm
-    BENZ_HI = 5.0            # ppm
-    ALC_HI  = 10.0           # eq
+    VISION_MIN_CONF = float(os.getenv("VISION_MIN_CONF", "60"))
+    CO2_HI  = float(os.getenv("CO2_HI",  "2000"))
+    NH3_HI  = float(os.getenv("NH3_HI",  "15"))
+    BENZ_HI = float(os.getenv("BENZ_HI", "5"))
+    ALC_HI  = float(os.getenv("ALC_HI",  "10"))
 
     pred = last.get("vision") or {}
     gas  = (last.get("gas") or {}).get("ppm", {}) or {}
@@ -368,7 +369,18 @@ def summary():
 @app.get("/healthz")
 def healthz():
     return {"ok": True, "time": datetime.utcnow().isoformat()}
-    
+ @app.get("/debug-model")
+def debug_model():
+    try:
+        m = load_model()
+        d = torch.randn(1,3,224,224).to(DEVICE)
+        with torch.inference_mode():
+            out = m(d)
+        shape = out[1].shape if isinstance(out, (tuple, list)) else out.shape
+        return {"ok": True, "type": str(type(m)), "out": str(shape), "device": str(DEVICE)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+   
 # UI
 @app.get("/", response_class=HTMLResponse)
 def welcome():
