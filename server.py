@@ -806,7 +806,7 @@ async function sendGas(){
   } finally { setStatus('gas','idle'); }
 }
 function resetGas(){ el.adc.value="1800"; el.vref.value="3.3"; el.rl.value="10000"; el.r0.value="10000"; }
-function preset(t){ if(t==='fresh'){ el.adc.value="700"; el.r0.value="12000"; } else { el.adc.value="2500"; el.r0.value="8000"; } }
+function preset(t){ if(t==='fresh'){ el.adc.value="700"; el.r0.value="12000"; } else { el.adc.value="2800"; el.r0.value="8000"; } }
 
 async function refresh(){
   const r = await fetch('/summary',{cache:'no-store'}); const s = await r.json();
