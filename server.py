@@ -2,7 +2,7 @@ import os, io, csv
 from datetime import datetime
 from collections import deque
 from typing import Optional
-
+import json
 import threading
 import numpy as np
 from PIL import Image
@@ -45,6 +45,25 @@ LAST = {"vision": None, "vision_updated": None, "gas": None, "gas_updated": None
 HISTORY = deque(maxlen=MAX_POINTS)
 EXPO_TOKENS = set()
 LAST_DECISION = None
+
+# Expo tokens
+TOKENS_FILE = Path(__file__).parent / "expo_tokens.json"
+
+def _load_tokens():
+    try:
+        if TOKENS_FILE.exists():
+            EXPO_TOKENS.update(json.loads(TOKENS_FILE.read_text()))
+    except Exception:
+        pass
+
+def _save_tokens():
+    try:
+        TOKENS_FILE.write_text(json.dumps(list(EXPO_TOKENS)))
+    except Exception:
+        pass
+
+_load_tokens()
+
 #notifications
 def send_expo_push(title: str, body: str, data: dict | None = None):
     if not EXPO_TOKENS:
@@ -91,11 +110,13 @@ def register_expo(t: ExpoToken):
     if not t.token.startswith("ExponentPushToken"):
         return JSONResponse({"error": "invalid_token"}, status_code=400)
     EXPO_TOKENS.add(t.token.strip())
+    _save_tokens()
     return {"ok": True, "count": len(EXPO_TOKENS)}
 
 @app.post("/unregister_expo")
 def unregister_expo(t: ExpoToken):
     EXPO_TOKENS.discard(t.token.strip())
+    _save_tokens()
     return {"ok": True, "count": len(EXPO_TOKENS)}
 
 # model
