@@ -343,10 +343,10 @@ def _summarize(last: dict) -> dict:
     - Any high gas flag can mark the sample as spoiled.
     """
     VISION_MIN_CONF = float(os.getenv("VISION_MIN_CONF", "60"))
-    CO2_HI  = float(os.getenv("CO2_HI",  "2000"))
-    NH3_HI  = float(os.getenv("NH3_HI",  "15"))
-    BENZ_HI = float(os.getenv("BENZ_HI", "5"))
-    ALC_HI  = float(os.getenv("ALC_HI",  "10"))
+    CO2_HI  = float(os.getenv("CO2_HI",  "1000"))
+    NH3_HI  = float(os.getenv("NH3_HI",  "400"))
+    BENZ_HI = float(os.getenv("BENZ_HI", "400"))
+    ALC_HI  = float(os.getenv("ALC_HI",  "400"))
 
     pred = last.get("vision") or {}
     gas  = (last.get("gas") or {}).get("ppm", {}) or {}
