@@ -13,7 +13,7 @@ from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse
 from pydantic import BaseModel
-
+from pathlib import Path
 import torchvision
 from torchvision import transforms as T
 from torchvision.transforms.functional import InterpolationMode
@@ -52,7 +52,7 @@ TOKENS_FILE = Path(__file__).parent / "expo_tokens.json"
 def _load_tokens():
     try:
         if TOKENS_FILE.exists():
-            EXPO_TOKENS.update(json.loads(TOKENS_FILE.read_text()))
+            EXPO_TOKENS.update(set(json.loads(TOKENS_FILE.read_text())))
     except Exception:
         pass
 
@@ -61,6 +61,7 @@ def _save_tokens():
         TOKENS_FILE.write_text(json.dumps(list(EXPO_TOKENS)))
     except Exception:
         pass
+
 
 _load_tokens()
 
