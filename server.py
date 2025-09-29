@@ -14,14 +14,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse
 from pydantic import BaseModel
 from pathlib import Path
-
 import torchvision
 from torchvision import transforms as T
 from torchvision.transforms.functional import InterpolationMode
 
-# ---------------------------------------------------------------------
-# Basic config
-# ---------------------------------------------------------------------
+
 torch.set_num_threads(1)
 _INFER_LOCK = threading.Lock()
 
@@ -31,15 +28,13 @@ MAX_POINTS  = int(os.getenv("MAX_POINTS", "240"))
 
 FRESHNESS_NAMES = ["Fresh", "Spoiled"]
 
-# Preprocessing (matches your notebook)
+# Preprocessing 
 IMG_TX = T.Compose([
     T.Resize((224, 224), interpolation=InterpolationMode.BICUBIC),
     T.ToTensor()
 ])
 
-# ---------------------------------------------------------------------
 # FastAPI
-# ---------------------------------------------------------------------
 app = FastAPI(title="Fruit Freshness & Gas Detector")
 app.add_middleware(
     CORSMiddleware,
@@ -54,9 +49,7 @@ HISTORY = deque(maxlen=MAX_POINTS)
 EXPO_TOKENS = set()
 LAST_DECISION = None
 
-# ---------------------------------------------------------------------
-# Expo tokens persistence
-# ---------------------------------------------------------------------
+# Expo tokens
 TOKENS_FILE = Path(__file__).parent / "expo_tokens.json"
 
 def _load_tokens():
@@ -74,9 +67,7 @@ def _save_tokens():
 
 _load_tokens()
 
-# ---------------------------------------------------------------------
 # Expo push notifications
-# ---------------------------------------------------------------------
 def send_expo_push(title: str, body: str, data: dict | None = None):
     if not EXPO_TOKENS:
         return {"ok": False, "detail": "no tokens"}
@@ -114,9 +105,8 @@ def maybe_notify_on_spoilage():
     except Exception:
         pass
 
-# ---------------------------------------------------------------------
+
 # Expo register / unregister
-# ---------------------------------------------------------------------
 class ExpoToken(BaseModel):
     token: str
 
@@ -134,9 +124,7 @@ def unregister_expo(t: ExpoToken):
     _save_tokens()
     return {"ok": True, "count": len(EXPO_TOKENS)}
 
-# ---------------------------------------------------------------------
 # Model
-# ---------------------------------------------------------------------
 class Model(nn.Module):
     def __init__(self):
         super().__init__()
@@ -223,9 +211,7 @@ def predict_pil(pil: Image.Image):
     raw = {FRESHNESS_NAMES[i]: float(p) for i, p in enumerate(probs_t)}
     return {"label": label, "confidence": round(conf, 1), "raw": {"probs": raw}}
 
-# ---------------------------------------------------------------------
 # Vision endpoint
-# ---------------------------------------------------------------------
 @app.post("/predict")
 async def predict(image: UploadFile = File(...)):
     try:
@@ -243,9 +229,7 @@ async def predict(image: UploadFile = File(...)):
     except Exception as e:
         return JSONResponse({"error": "inference_failed", "detail": str(e)}, status_code=500)
 
-# ---------------------------------------------------------------------
 # Gas endpoints
-# ---------------------------------------------------------------------
 class GasReading(BaseModel):
     vrl: Optional[float] = None
     adc: Optional[int]   = None
@@ -333,9 +317,7 @@ def export_csv():
         headers={"Content-Disposition": 'attachment; filename="gas_history.csv"'}
     )
 
-# ---------------------------------------------------------------------
-# Summary / Health
-# ---------------------------------------------------------------------
+# Summary & Health
 def _summarize(last: dict) -> dict:
     """
     Combine the latest vision prediction and gas ppm into one decision.
@@ -388,9 +370,7 @@ def summary():
 def healthz():
     return {"ok": True, "time": datetime.utcnow().isoformat()}
 
-# ---------------------------------------------------------------------
-# Debug model endpoint  (make sure decorator is at column 0)
-# ---------------------------------------------------------------------
+# Debug model endpoint
 @app.get("/debug-model")
 def debug_model():
     try:
@@ -403,9 +383,8 @@ def debug_model():
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
-# ---------------------------------------------------------------------
-# Minimal UI (welcome + /home)
-# ---------------------------------------------------------------------
+
+# UI 
 @app.get("/", response_class=HTMLResponse)
 def welcome():
     return """
