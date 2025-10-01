@@ -146,7 +146,7 @@ class Model(nn.Module):
             nn.Linear(512, 256), nn.ReLU(), nn.Dropout(0.2),
             nn.Linear(256, 128),
         )
-        self.block2 = nn.Sequential(  # fruit head (unused here)
+        self.block2 = nn.Sequential(  # fruit head 
             nn.Linear(128, 128), nn.ReLU(), nn.Dropout(0.1),
             nn.Linear(128, 9)
         )
