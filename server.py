@@ -165,7 +165,6 @@ class Model(nn.Module):
 _model = None
 
 def load_model():
-    """Load TorchScript, then full module, then state_dict."""
     global _model
     print("[model] MODEL_PATH:", MODEL_PATH, "exists:", os.path.exists(MODEL_PATH))
     if _model is not None:
@@ -180,11 +179,12 @@ def load_model():
     except Exception:
         pass
 
-    # 2) Full Module or 3) state_dict
+    # 2) Full Module 
     obj = torch.load(MODEL_PATH, map_location=DEVICE)
     if isinstance(obj, nn.Module):
         _model = obj.eval().to(DEVICE)
         return _model
+    # 3) state_dict
     if isinstance(obj, dict):
         m = Model().to(DEVICE)
         m.load_state_dict(obj, strict=True)
